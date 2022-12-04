@@ -229,7 +229,7 @@ class EfficientNetV2(tf.keras.Model):
 
         self.avgpooling=layers.GlobalAveragePooling2D()
         self.dropout=layers.Dropout(dropout)
-        self.dense=layers.Dense(1000)
+        self.dense=layers.Dense(1)
         self.softmax=layers.Activation('softmax')
 
 
@@ -291,25 +291,18 @@ class EfficientNetV2(tf.keras.Model):
 
         return x_out
 
-def efficientnet_Bx(width_ceoff=1.0,depth_ceoff=1.0,resolution=224,dropout=0.2):
+def efficientnet_Bx(width_ceoff=1.0,depth_ceoff=1.0,resolution=128,dropout=0.2):
     efficientnetV2S = EfficientNetV2(width_ceoff=width_ceoff, depth_ceoff=depth_ceoff, dropout=dropout)
-    efficientnetV2S.build(input_shape=(None,resolution,resolution, 3))
+    efficientnetV2S.build(input_shape=(None,resolution,resolution, 1))
     efficientnetV2S.summary()
 
     return efficientnetV2S
 
 if __name__ == '__main__':
-    print('Pycharm')
-    efficientnet_Bx(width_ceoff=1.0,depth_ceoff=1.0,resolution=224,dropout=0.2)
-
-
-
-
-if __name__ == '__main__':
     # 加载模型
-    #model = get_model(width=128, height=128)
+    model = get_model(width=128, height=128)
 
-    model = efficientnet_Bx(width_ceoff=1.0, depth_ceoff=1.0, resolution=224, dropout=0.2)
+    #model = efficientnet_Bx(width_ceoff=1.0, depth_ceoff=1.0, resolution=128, dropout=0.2)
 
     # print(model.summary())
     # 编译模型
