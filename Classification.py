@@ -91,219 +91,255 @@ def get_model(width=128, height=128):
     return model
 
 # efficientnetv2网络结构
-
-#Swish激活函数的实现
-#网络的深度缩放
-#网络的宽度缩放
-import math
-import os
-import keras
 import tensorflow as tf
-from tensorflow.keras import layers
+from tensorflow import keras
+from tensorflow.keras import Model, layers
 
-def Swish(inputs):
-    return inputs*tf.sigmoid(inputs)
 
-class MBConvxBlock(tf.keras.Model):
-    def __init__(self,filter_inp,expand_rato,dropout_rate,kernel_size=(3,3),strides=(1,1)):
-        super(MBConvxBlock, self).__init__()
-        self.strides=strides
+# （1）swish激活函数
+def swish(x):
+    x = x * tf.nn.sigmoid(x)
+    return x
 
-        #逐点卷积（1x1卷积）归一化
-        self.conv11=layers.Conv2D(expand_rato*filter_inp,kernel_size=[1,1],strides=[1,1],padding='same')
-        self.BN1=layers.BatchNormalization()
 
-        #深度可分离卷积
-        self.depthwise=layers.DepthwiseConv2D(kernel_size=kernel_size,strides=strides,padding='same')
-        self.BN2=layers.BatchNormalization()
+# （2）标准卷积块
+def conv_block(inputs, filters, kernel_size, stride, activation=True):
+    # 卷积+BN+激活
+    x = layers.Conv2D(filters=filters,
+                      kernel_size=kernel_size,
+                      strides=stride,
+                      padding='same',
+                      use_bias=False)(inputs)
 
-        #SE操作
-        self.SE=keras.Sequential([
-            layers.AveragePooling2D(pool_size=[1,1]),
-            layers.Conv2D(filter_inp//4,kernel_size=[1,1],strides=[1,1],padding='same'),
-            layers.Conv2D(filter_inp//4,kernel_size=[1,1],strides=[1,1],padding='same')
-        ])
+    x = layers.BatchNormalization()(x)
 
-        self.conv22=layers.Conv2D(filter_inp,kernel_size=[1,1],strides=[1,1],padding='same')
+    if activation:  # 如果activation==True就使用激活函数
+        x = swish(x)
 
-        self.BN3=layers.BatchNormalization()
-        #连接失活
-        self.dropout=layers.Dropout(dropout_rate)
+    return x
 
-        #如果步长为1的话，残差连接
-        if strides==1:
-            self.shortcut=layers.Conv2D(filter_inp,kernel_size=[1,1],strides=[1,1],padding='same')
-            self.shortcutBN=layers.BatchNormalization()
 
-    def call(self,inputs,training=None):
-        x=self.conv11(inputs)
-        x=self.BN1(x)
-        x=Swish(x)
+# （3）SE注意力机制
+def se_block(inputs, in_channel, ratio=0.25):
+    '''
+    inputs: 深度卷积层的输出特征图
+    input_channel: MBConv模块的输入特征图的通道数
+    ratio: 第一个全连接层的通道数下降为MBConv输入特征图的几倍
+    '''
+    squeeze = int(in_channel * ratio)  # 第一个FC降低通道数个数
+    excitation = inputs.shape[-1]  # 第二个FC上升通道数个数
 
-        x=self.depthwise(x)
-        x=self.BN2(x)
-        x=Swish(x)
+    # 全局平均池化 [h,w,c]==>[None,c]
+    x = layers.GlobalAveragePooling2D()(inputs)
 
-        x=self.SE(x)
-        x=self.conv22(x)
-        x=self.BN3(x)
+    # [None,c]==>[1,1,c]
+    x = layers.Reshape(target_shape=(1, 1, x.shape[-1]))(x)
 
-        x=self.dropout(x)
+    # [1,1,c]==>[1,1,c/4]
+    x = layers.Conv2D(filters=squeeze,  # 通道数下降1/4
+                      kernel_size=(1, 1),
+                      strides=1,
+                      padding='same')(x)
 
-        if self.strides==1:
-            x1=self.shortcut(inputs)
-            x1=self.shortcutBN(x1)
-            x_out=tf.add(x,x1)
-            return x_out
+    x = swish(x)  # swish激活
+
+    # [1,1,c/4]==>[1,1,c]
+    x = layers.Conv2D(filters=excitation,  # 通道数上升至原来
+                      kernel_size=(1, 1),
+                      strides=1,
+                      padding='same')(x)
+
+    x = tf.nn.sigmoid(x)  # sigmoid激活，权重归一化
+
+    # [h,w,c] * [1,1,c] ==> [h,w,c]
+    outputs = layers.multiply([inputs, x])
+
+    return outputs
+
+
+# （3）逆转残差模块
+def MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate):
+    '''
+    expansion: 第一个卷积层特征图通道数上升的倍数
+    kernel_size: 深度卷积层的卷积核size
+    stride: 深度卷积层的步长
+    out_channel: 第二个卷积层下降的通道数
+    dropout_rate: Dropout层随机丢弃输出层的概率，直接将输入接到输出
+    '''
+    # 残差边
+    residual = x
+
+    # 输入特征图的通道数
+    in_channel = x.shape[-1]
+
+    # ① 1*1标准卷积升维
+    x = conv_block(inputs=x,
+                   filters=in_channel * expansion,  # 上升通道数为expansion倍
+                   kernel_size=(1, 1),
+                   stride=1,
+                   activation=True)
+
+    # ② 3*3深度卷积
+    x = layers.DepthwiseConv2D(kernel_size=kernel_size,
+                               strides=stride,
+                               padding='same',
+                               use_bias=False)(x)
+
+    x = layers.BatchNormalization()(x)
+
+    x = swish(x)
+
+    # ④ SE注意力机制，输入特征图x，和MBConv模块输入图像的通道数
+    x = se_block(inputs=x, in_channel=in_channel)
+
+    # ⑤ 1*1标准卷积降维，使用线性激活
+    x = conv_block(inputs=x,
+                   filters=out_channel,  # 上升通道数
+                   kernel_size=(1, 1),
+                   stride=1,
+                   activation=False)  # 不使用swish激活
+
+    # ⑥ 只有步长=1且输入等于输出shape，才使用残差连接输入和输出
+    if stride == 1 and residual.shape == x.shape:
+
+        # 判断是否进行dropout操作
+        if dropout_rate > 0:
+            # 参数noise_shape一定的概率将某一层的输出丢弃
+            x = layers.Dropout(rate=dropout_rate,  # 丢弃概率
+                               noise_shape=(None, 1, 1, 1))
+
+        # 残差连接输入和输出
+        x = layers.Add([residual, x])
+
         return x
 
-class MBConvx_FusedBlock(tf.keras.Model):
-    def __init__(self,filter_inp,expand_rato,dropout_rate,kernel_size=(3,3),strides=(1,1)):
-        super(MBConvx_FusedBlock, self).__init__()
-        self.strides=strides
+    # 如果步长=2，直接输出1*1卷积降维后的结果
+    return x
 
 
-        #逐点卷积（1x1卷积）归一化
-        self.conv11=layers.Conv2D(expand_rato*filter_inp,kernel_size=kernel_size,strides=strides,padding='same')
-        self.BN1=layers.BatchNormalization()
+# （4）Fused-MBConv模块
+def Fused_MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate):
+    # 残差边
+    residual = x
 
-        #SE操作
-        self.SE=keras.Sequential([
-            layers.AveragePooling2D(pool_size=[1,1]),
-            layers.Conv2D(filter_inp//4,kernel_size=[1,1],strides=[1,1],padding='same'),
-            layers.Conv2D(filter_inp//4,kernel_size=[1,1],strides=[1,1],padding='same')
-        ])
+    # 输入特征图的通道数
+    in_channel = x.shape[-1]
 
-        self.conv22=layers.Conv2D(filter_inp,kernel_size=[1,1],strides=[1,1],padding='same')
+    # ① 如果通道扩展倍数expansion==1，就不需要升维
+    if expansion != 1:
+        # 3*3标准卷积升维
+        x = conv_block(inputs=x,
+                       filters=in_channel * expansion,  # 通道数上升为原来的expansion倍
+                       kernel_size=kernel_size,
+                       stride=stride)
 
-        self.BN3=layers.BatchNormalization()
-        #连接失活
-        self.dropout=layers.Dropout(dropout_rate)
+    # ② 判断卷积的类型
+    # 如果expansion==1，变成3*3卷积+BN+激活；
+    # 如果expansion!=1，变成1*1卷积+BN，步长为1
+    x = conv_block(inputs=x,
+                   filters=out_channel,  # FusedMBConv模块输出特征图通道数
+                   kernel_size=(1, 1) if expansion != 1 else kernel_size,
+                   stride=1 if expansion != 1 else stride,
+                   activation=False if expansion != 1 else True)
 
-        #如果步长为1的话，残差连接
-        if strides==1:
-            self.shortcut=layers.Conv2D(filter_inp,kernel_size=[1,1],strides=[1,1],padding='same')
-            self.shortcutBN=layers.BatchNormalization()
+    # ④ 当步长=1且输入输出shape相同时残差连接
+    if stride == 1 and residual.shape == x.shape:
 
-    def call(self,inputs,training=None):
-        x=self.conv11(inputs)
-        x=self.BN1(x)
-        x=Swish(x)
+        # 判断是否使用Dropout层
+        if dropout_rate > 0:
+            x = layers.Dropout(rate=dropout_rate,  # 随机丢弃输出层的概率
+                               noise_shape=(None, 1, 1, 1))  # 代表不是杀死神经元，是丢弃输出层
 
+        # 残差连接输入和输出
+        outputs = layers.Add([residual, x])
 
-        x=self.SE(x)
-        x=self.conv22(x)
-        x=self.BN3(x)
+        return outputs
 
-        x=self.dropout(x)
-
-        if self.strides==1:
-            x1=self.shortcut(inputs)
-            x1=self.shortcutBN(x1)
-            x_out=tf.add(x,x1)
-            return x_out
-        return x
-
-
-class EfficientNetV2(tf.keras.Model):
-    def __init__(self,width_ceoff,depth_ceoff,dropout=0.2):
-        super(EfficientNetV2, self).__init__()
-
-        self.width_coeff=width_ceoff
-        self.depth_ceoff=depth_ceoff
-        self.divisor=8
-
-        #输入的第一个3x3卷积操作
-        self.conv11=layers.Conv2D(24,kernel_size=[3,3],strides=[2,2],padding='same')
-        self.BN1=layers.BatchNormalization()
-
-        self.MBConvblock1 = self.MBConvxFused(filter_inp=self.rounds_width(24),expand_rato=1,layers=self.rounds_depth(2), kernel_size=(3,3),  strides=(1,1), dropout_rate=0.2,i=1)
-        self.MBConvblock2 = self.MBConvxFused(filter_inp=self.rounds_width(48),expand_rato=4, layers=self.rounds_depth(4), kernel_size=(3, 3), strides=(2,2), dropout_rate=0.2,i=2)
-        self.MBConvblock3 = self.MBConvxFused(filter_inp=self.rounds_width(64),expand_rato=4, layers=self.rounds_depth(4), kernel_size=(5,5), strides=(2,2), dropout_rate=0.2,i=3)
-        self.MBConvblock4 = self.MBConvx(filter_inp=self.rounds_width(128), expand_rato=4,layers=self.rounds_depth(6), kernel_size=(3, 3), strides=(2,2), dropout_rate=0.2,i=4)
-        self.MBConvblock5 = self.MBConvx(filter_inp=self.rounds_width(160),expand_rato=6, layers=self.rounds_depth(9), kernel_size=(5,5), strides=(1,1), dropout_rate=0.2,i=5)
-        self.MBConvblock6 = self.MBConvx(filter_inp=self.rounds_width(256), expand_rato=6,layers=self.rounds_depth(15), kernel_size=(5,5), strides=(2,2), dropout_rate=0.2,i=6)
-
-        self.conv22=layers.Conv2D(1280,kernel_size=[1,1],strides=[1,1],padding='same')
-        self.BN2=layers.BatchNormalization()
-
-        self.avgpooling=layers.GlobalAveragePooling2D()
-        self.dropout=layers.Dropout(dropout)
-        self.dense=layers.Dense(1)
-        self.softmax=layers.Activation('softmax')
+    # 若步长等于2，直接输出卷积层输出结果
+    return x
 
 
-    def MBConvx(self,filter_inp,layers,expand_rato,kernel_size,strides,dropout_rate,i):
-        mbconv=keras.Sequential([],name='MBConv'+str(i))
-        mbconv.add(
-            MBConvxBlock(filter_inp,expand_rato, dropout_rate, kernel_size, strides)
-        )
-        for i in range(1,layers):
-            mbconv.add(
-                MBConvxBlock(filter_inp,expand_rato,dropout_rate,kernel_size)
-            )
-        return mbconv
+# （5）每个模块重复执行num次
+# Fused_MBConv模块
+def Fused_stage(x, num, expansion, kernel_size, stride, out_channel, dropout_rate):
+    for _ in range(num):
+        # 传入参数，反复调用Fused_MBConv模块
+        x = Fused_MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate)
 
-    def MBConvxFused(self,filter_inp,expand_rato,layers,kernel_size,strides,dropout_rate,i):
-        mbconvfused=keras.Sequential([],name='MBConv'+str(i))
-        mbconvfused.add(
-            MBConvx_FusedBlock(filter_inp, expand_rato,dropout_rate, kernel_size, strides)
-        )
-        for i in range(1,layers):
-            mbconvfused.add(
-                MBConvx_FusedBlock(filter_inp,expand_rato,dropout_rate,kernel_size)
-            )
-        return mbconvfused
+    return x
 
-    #计算缩放之后的宽度
-    def rounds_width(self,filters):
-        filters*=self.width_coeff
-        #计算之后的宽度
-        new_filters=max(self.divisor,int(filters+self.divisor/2)//self.divisor*self.divisor)
-        if new_filters<0.9*filters:
-            new_filters+=self.divisor
-        return int(new_filters)
 
-    #计算深度
-    def rounds_depth(self,layers):
-        return int(math.ceil((self.depth_ceoff*layers)))
+# MBConv模块
+def stage(x, num, expansion, kernel_size, stride, out_channel, dropout_rate):
+    for _ in range(num):
+        # 反复执行MBConv模块
+        x = MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate)
 
-    def call(self,inputs,training=None):
-        x=self.conv11(inputs)
-        x=self.BN1(x)
-        x=Swish(x)
+    return x
 
-        x = self.MBConvblock1(x)
-        x = self.MBConvblock2(x)
-        x = self.MBConvblock3(x)
-        x = self.MBConvblock4(x)
-        x = self.MBConvblock5(x)
-        x = self.MBConvblock6(x)
 
-        x=self.conv22(x)
-        x=self.BN2(x)
-        x=Swish(x)
+# （6）主干网络
+def efficientnetv2(input_shape, classes, dropout_rate):
+    # 构造输入层
+    inputs = keras.Input(shape=input_shape)
 
-        x=self.avgpooling(x)
-        x=self.dropout(x)
-        x=self.dense(x)
-        x_out=self.softmax(x)
+    # 标准卷积层[224,224,3]==>[112,112,24]
+    x = conv_block(inputs, filters=24, kernel_size=(3, 3), stride=2)
 
-        return x_out
+    # [112,112,24]==>[112,112,24]
+    x = Fused_stage(x, num=2, expansion=1, kernel_size=(3, 3),
+                    stride=1, out_channel=24, dropout_rate=dropout_rate)
 
-def efficientnet_Bx(width_ceoff=1.0,depth_ceoff=1.0,resolution=128,dropout=0.2):
-    efficientnetV2S = EfficientNetV2(width_ceoff=width_ceoff, depth_ceoff=depth_ceoff, dropout=dropout)
-    efficientnetV2S.build(input_shape=(None,resolution,resolution, 1))
-    efficientnetV2S.summary()
+    # [112,112,24]==>[56,56,48]
+    x = Fused_stage(x, num=4, expansion=4, kernel_size=(3, 3),
+                    stride=2, out_channel=48, dropout_rate=dropout_rate)
 
-    return efficientnetV2S
+    # [56,56,48]==>[32,32,64]
+    x = Fused_stage(x, num=4, expansion=4, kernel_size=(3, 3),
+                    stride=2, out_channel=64, dropout_rate=dropout_rate)
+
+    # [32,32,64]==>[16,16,128]
+    x = stage(x, num=6, expansion=4, kernel_size=(3, 3),
+              stride=2, out_channel=128, dropout_rate=dropout_rate)
+
+    # [16,16,128]==>[16,16,160]
+    x = stage(x, num=9, expansion=6, kernel_size=(3, 3),
+              stride=1, out_channel=160, dropout_rate=dropout_rate)
+
+    # [16,16,160]==>[8,8,256]
+    x = stage(x, num=15, expansion=6, kernel_size=(3, 3),
+              stride=2, out_channel=256, dropout_rate=dropout_rate)
+
+    # [8,8,256]==>[8,8,1280]
+    x = conv_block(x, filters=1280, kernel_size=(1, 1), stride=1)
+
+    # [8,8,1280]==>[None,1280]
+    x = layers.GlobalAveragePooling2D()(x)
+
+    # dropout层随机杀死神经元
+    if dropout_rate > 0:
+        x = layers.Dropout(rate=dropout_rate)
+
+        # [None,1280]==>[None,classes]
+    logits = layers.Dense(classes)(x)
+
+    # 构建网络
+    model = Model(inputs, logits)
+
+    return model
+
+
+
+
+
 
 if __name__ == '__main__':
     # 加载模型
-    model = get_model(width=128, height=128)
+    #model = get_model(width=128, height=128)
 
-    #model = efficientnet_Bx(width_ceoff=1.0, depth_ceoff=1.0, resolution=128, dropout=0.2)
-
+    model = efficientnetv2(input_shape=[128, 128 1],  # 输入图像shape
+                           classes=1000,  # 分类数
+                           dropout_rate=0)
     # print(model.summary())
     # 编译模型
     initial_learning_rate = 0.0001  # 学习率
