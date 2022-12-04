@@ -91,10 +91,6 @@ def get_model(width=128, height=128):
     return model
 
 # efficientnetv2网络结构
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import Model, layers
-
 
 # （1）swish激活函数
 def swish(x):
@@ -337,7 +333,7 @@ if __name__ == '__main__':
     # 加载模型
     #model = get_model(width=128, height=128)
 
-    model = efficientnetv2(input_shape=[128, 128 1],  # 输入图像shape
+    model = efficientnetv2(input_shape=[128, 128, 1],  # 输入图像shape
                            classes=1000,  # 分类数
                            dropout_rate=0)
     # print(model.summary())
