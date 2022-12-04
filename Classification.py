@@ -9,88 +9,10 @@ from tensorflow.keras.layers import Input, BatchNormalization, Dense, Dropout
 from tensorflow.keras.layers import Conv2D, MaxPooling2D, GlobalAveragePooling2D
 import pathlib
 
-import math
-import os
-import keras
 import tensorflow as tf
+from tensorflow import keras
 from tensorflow.keras import layers
 
-
-def load_data():
-    """=============== 加载数据 ==============="""
-    infile = open('../input/Processed_Data.cp', 'rb')
-    data_dict = pickle.load(infile)
-    all_cts = data_dict['cts']
-    all_inf = data_dict['infects']
-    infile.close()
-
-    from sklearn.utils import shuffle
-    all_cts, all_inf = shuffle(all_cts, all_inf)  # 数据同步混洗
-
-    all_cts = np.array(all_cts)
-    all_inf = np.array(all_inf)
-
-    print(all_cts.shape)
-    print(all_inf.shape)
-
-    # 数据标准化, 映射到0 1区间
-    all_cts = (all_cts - all_cts.min()) / (all_cts.max() - all_cts.min())
-    all_inf = (all_inf - all_inf.min()) / (all_inf.max() - all_inf.min())
-
-    # print("{} {}".format(all_cts.min(), all_cts.max()))
-    # print("{} {}".format(all_inf.min(), all_inf.max()))
-
-    """=============== 创建标签 ==============="""
-    total_slides = len(all_cts)
-    index_arr = []
-    inf_check = np.ones((len(all_inf)))
-    for i in range(len(all_inf)):
-        if np.unique(all_inf[i]).size == 1:
-            inf_check[i] = 0
-            index_arr.append(i)
-    # print("Number of CTS with no infection ", len(index_arr))
-
-    """=============== 划分数据集6:2:2 ==============="""
-    X_train = all_cts[:int(len(all_cts) * 0.6)]
-    Y_train = inf_check[:int(len(inf_check) * 0.6)]
-    X_val = all_cts[int(len(all_cts) * 0.6):int(len(all_cts) * 0.8)]
-    Y_val = inf_check[int(len(inf_check) * 0.6):int(len(inf_check) * 0.8)]
-    X_test = all_cts[int(len(all_cts) * 0.8):]
-    Y_test = inf_check[int(len(inf_check) * 0.8):]
-    X_test_inf = all_inf[int(len(all_inf) * 0.8):]
-
-    print("{} {}".format(X_train.shape, Y_train.shape))
-    print("{} {}".format(X_val.shape, Y_val.shape))
-    print("{} {}".format(X_test.shape, Y_test.shape))
-
-    return X_train, Y_train, X_val, Y_val, X_test, Y_test, X_test_inf
-
-
-
-# 定义网络框架
-def get_model(width=128, height=128):
-    inputs = Input((width, height, 1))
-    x = Conv2D(filters=64, kernel_size=3, activation="relu")(inputs)
-    x = MaxPooling2D(pool_size=2)(x)
-    x = BatchNormalization()(x)
-    x = Conv2D(filters=64, kernel_size=3, activation="relu")(x)
-    x = MaxPooling2D(pool_size=2)(x)
-    x = BatchNormalization()(x)
-    x = Conv2D(filters=128, kernel_size=3, activation="relu")(x)
-    x = MaxPooling2D(pool_size=2)(x)
-    x = BatchNormalization()(x)
-    x = Conv2D(filters=256, kernel_size=3, activation="relu")(x)
-    x = MaxPooling2D(pool_size=2)(x)
-    x = BatchNormalization()(x)
-    x = GlobalAveragePooling2D()(x)
-    x = Dense(units=512, activation="relu")(x)
-    x = Dropout(0.3)(x)
-    outputs = Dense(units=1, activation="sigmoid")(x)
-    # Define the model.
-    model = Model(inputs, outputs, name="2dcnn")
-    return model
-
-# efficientnetv2网络结构
 
 # （1）swish激活函数
 def swish(x):
@@ -326,7 +248,85 @@ def efficientnetv2(input_shape, classes, dropout_rate):
 
 
 
+def load_data():
+    """=============== 加载数据 ==============="""
+    infile = open('../input/Processed_Data.cp', 'rb')
+    data_dict = pickle.load(infile)
+    all_cts = data_dict['cts']
+    all_inf = data_dict['infects']
+    infile.close()
 
+    from sklearn.utils import shuffle
+    all_cts, all_inf = shuffle(all_cts, all_inf)  # 数据同步混洗
+
+    all_cts = np.array(all_cts)
+    all_inf = np.array(all_inf)
+
+    print(all_cts.shape)
+    print(all_inf.shape)
+
+    # 数据标准化, 映射到0 1区间
+    all_cts = (all_cts - all_cts.min()) / (all_cts.max() - all_cts.min())
+    all_inf = (all_inf - all_inf.min()) / (all_inf.max() - all_inf.min())
+
+    # print("{} {}".format(all_cts.min(), all_cts.max()))
+    # print("{} {}".format(all_inf.min(), all_inf.max()))
+
+    """=============== 创建标签 ==============="""
+    total_slides = len(all_cts)
+    index_arr = []
+    inf_check = np.ones((len(all_inf)))
+    for i in range(len(all_inf)):
+        if np.unique(all_inf[i]).size == 1:
+            inf_check[i] = 0
+            index_arr.append(i)
+    # print("Number of CTS with no infection ", len(index_arr))
+
+    """=============== 划分数据集6:2:2 ==============="""
+    X_train = all_cts[:int(len(all_cts) * 0.6)]
+    Y_train = inf_check[:int(len(inf_check) * 0.6)]
+    X_val = all_cts[int(len(all_cts) * 0.6):int(len(all_cts) * 0.8)]
+    Y_val = inf_check[int(len(inf_check) * 0.6):int(len(inf_check) * 0.8)]
+    X_test = all_cts[int(len(all_cts) * 0.8):]
+    Y_test = inf_check[int(len(inf_check) * 0.8):]
+    X_test_inf = all_inf[int(len(all_inf) * 0.8):]
+
+    print("{} {}".format(X_train.shape, Y_train.shape))
+    print("{} {}".format(X_val.shape, Y_val.shape))
+    print("{} {}".format(X_test.shape, Y_test.shape))
+
+    return X_train, Y_train, X_val, Y_val, X_test, Y_test, X_test_inf
+
+
+# 定义网络框架
+def get_model(width=128, height=128):
+    inputs = Input((width, height, 1))
+
+    x = Conv2D(filters=64, kernel_size=3, activation="relu")(inputs)
+    x = MaxPooling2D(pool_size=2)(x)
+    x = BatchNormalization()(x)
+
+    x = Conv2D(filters=64, kernel_size=3, activation="relu")(x)
+    x = MaxPooling2D(pool_size=2)(x)
+    x = BatchNormalization()(x)
+
+    x = Conv2D(filters=128, kernel_size=3, activation="relu")(x)
+    x = MaxPooling2D(pool_size=2)(x)
+    x = BatchNormalization()(x)
+
+    x = Conv2D(filters=256, kernel_size=3, activation="relu")(x)
+    x = MaxPooling2D(pool_size=2)(x)
+    x = BatchNormalization()(x)
+
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(units=512, activation="relu")(x)
+    x = Dropout(0.3)(x)
+
+    outputs = Dense(units=1, activation="sigmoid")(x)
+
+    # Define the model.
+    model = Model(inputs, outputs, name="2dcnn")
+    return model
 
 
 if __name__ == '__main__':
@@ -338,7 +338,7 @@ if __name__ == '__main__':
                            dropout_rate=0.4)
     # print(model.summary())
     # 编译模型
-    initial_learning_rate = 0.0001  # 学习率
+    initial_learning_rate = 0.01  # 学习率
     lr_schedule = optimizers.schedules.ExponentialDecay(  # 优化器
         initial_learning_rate, decay_steps=100000, decay_rate=0.96, staircase=True
     )
