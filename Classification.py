@@ -205,7 +205,7 @@ def MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate):
                                noise_shape=(None, 1, 1, 1))
 
         # 残差连接输入和输出
-        x = layers.Add([residual, x])
+        x = layers.add([residual, x])
 
         return x
 
@@ -247,7 +247,7 @@ def Fused_MBConv(x, expansion, kernel_size, stride, out_channel, dropout_rate):
                                noise_shape=(None, 1, 1, 1))  # 代表不是杀死神经元，是丢弃输出层
 
         # 残差连接输入和输出
-        outputs = layers.Add([residual, x])
+        outputs = layers.add([residual, x])
 
         return outputs
 
@@ -334,8 +334,8 @@ if __name__ == '__main__':
     #model = get_model(width=128, height=128)
 
     model = efficientnetv2(input_shape=[128, 128, 1],  # 输入图像shape
-                           classes=1000,  # 分类数
-                           dropout_rate=0)
+                           classes=1,  # 分类数
+                           dropout_rate=0.4)
     # print(model.summary())
     # 编译模型
     initial_learning_rate = 0.0001  # 学习率
